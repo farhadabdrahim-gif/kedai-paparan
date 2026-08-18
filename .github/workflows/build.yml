@@ -1,0 +1,309 @@
+name: Build APK
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install SDK packages
+        run: sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0"
+
+      - name: Generate project files
+        run: |
+          mkdir -p app/src/main/java/com/kedai/paparan
+
+          cat > settings.gradle <<'EOF'
+          pluginManagement {
+            repositories { google(); mavenCentral(); gradlePluginPortal() }
+          }
+          dependencyResolutionManagement {
+            repositoriesMode.set(RepositoriesMode.PREFER_PROJECT)
+            repositories { google(); mavenCentral() }
+          }
+          rootProject.name = 'SunmiPaparan'
+          include ':app'
+          EOF
+
+          cat > gradle.properties <<'EOF'
+          org.gradle.jvmargs=-Xmx3g
+          android.useAndroidX=true
+          android.nonTransitiveRClass=true
+          EOF
+
+          cat > app/build.gradle <<'EOF'
+          plugins { id 'com.android.application' version '8.5.2' }
+          android {
+            namespace 'com.kedai.paparan'
+            compileSdk 34
+            defaultConfig {
+              applicationId 'com.kedai.paparan'
+              minSdk 23
+              targetSdk 33
+              versionCode 1
+              versionName '1.0'
+            }
+            compileOptions {
+              sourceCompatibility JavaVersion.VERSION_17
+              targetCompatibility JavaVersion.VERSION_17
+            }
+            buildTypes { debug { } }
+          }
+          EOF
+
+          cat > app/src/main/AndroidManifest.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+            <uses-permission android:name="android.permission.INTERNET"/>
+            <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+            <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW"/>
+            <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+            <application
+                android:label="Kedai Paparan"
+                android:allowBackup="true">
+              <activity
+                  android:name=".MainActivity"
+                  android:exported="true">
+                <intent-filter>
+                  <action android:name="android.intent.action.MAIN"/>
+                  <category android:name="android.intent.category.LAUNCHER"/>
+                </intent-filter>
+              </activity>
+              <service android:name=".PaparanService" android:exported="false"/>
+            </application>
+          </manifest>
+          EOF
+
+          cat > app/src/main/java/com/kedai/paparan/MainActivity.java <<'EOF'
+          package com.kedai.paparan;
+
+          import android.app.Activity;
+          import android.content.Intent;
+          import android.graphics.Color;
+          import android.net.Uri;
+          import android.os.Build;
+          import android.os.Bundle;
+          import android.provider.Settings;
+          import android.view.Gravity;
+          import android.widget.Button;
+          import android.widget.LinearLayout;
+          import android.widget.TextView;
+
+          public class MainActivity extends Activity {
+            private TextView status;
+
+            @Override protected void onCreate(Bundle b) {
+              super.onCreate(b);
+
+              if (Build.VERSION.SDK_INT >= 33) {
+                try { requestPermissions(new String[]{"android.permission.POST_NOTIFICATIONS"}, 7); } catch (Exception e) {}
+              }
+
+              LinearLayout root = new LinearLayout(this);
+              root.setOrientation(LinearLayout.VERTICAL);
+              root.setGravity(Gravity.CENTER);
+              root.setBackgroundColor(Color.parseColor("#0b3d2e"));
+              root.setPadding(60, 60, 60, 60);
+
+              TextView title = new TextView(this);
+              title.setText("Paparan Pelanggan\nSkrin Kedua Sunmi");
+              title.setTextColor(Color.WHITE);
+              title.setTextSize(24);
+              title.setGravity(Gravity.CENTER);
+              root.addView(title);
+
+              status = new TextView(this);
+              status.setTextColor(Color.parseColor("#9fe0c2"));
+              status.setTextSize(15);
+              status.setGravity(Gravity.CENTER);
+              status.setPadding(0, 40, 0, 40);
+              status.setText("Tekan 'Mula' untuk hidupkan paparan di skrin kedua.");
+              root.addView(status);
+
+              Button start = new Button(this);
+              start.setText("Mula Paparan");
+              root.addView(start);
+
+              Button stop = new Button(this);
+              stop.setText("Berhenti");
+              root.addView(stop);
+
+              start.setOnClickListener(v -> {
+                if (Build.VERSION.SDK_INT >= 23 && !Settings.canDrawOverlays(this)) {
+                  status.setText("Sila benarkan 'Papar di atas app lain' untuk app ini, kemudian tekan Mula semula.");
+                  try {
+                    startActivity(new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:" + getPackageName())));
+                  } catch (Exception e) {}
+                  return;
+                }
+                Intent svc = new Intent(this, PaparanService.class);
+                if (Build.VERSION.SDK_INT >= 26) startForegroundService(svc); else startService(svc);
+                status.setText("Paparan AKTIF di skrin kedua.\nAnda boleh guna POS di skrin utama seperti biasa.\nBiarkan app ini berjalan (jangan 'force stop').");
+              });
+
+              stop.setOnClickListener(v -> {
+                stopService(new Intent(this, PaparanService.class));
+                status.setText("Paparan dihentikan.");
+              });
+
+              setContentView(root);
+            }
+          }
+          EOF
+
+          cat > app/src/main/java/com/kedai/paparan/PaparanService.java <<'EOF'
+          package com.kedai.paparan;
+
+          import android.app.Notification;
+          import android.app.NotificationChannel;
+          import android.app.NotificationManager;
+          import android.app.Presentation;
+          import android.app.Service;
+          import android.content.Context;
+          import android.content.Intent;
+          import android.graphics.Color;
+          import android.hardware.display.DisplayManager;
+          import android.os.Build;
+          import android.os.IBinder;
+          import android.view.Display;
+          import android.view.ViewGroup;
+          import android.view.WindowManager;
+          import android.webkit.WebSettings;
+          import android.webkit.WebView;
+          import android.webkit.WebViewClient;
+          import android.widget.FrameLayout;
+
+          public class PaparanService extends Service {
+            static final String URL =
+              "https://gist.githack.com/farhadabdrahim-gif/8290e8ce40977304be20119f6e17a879/raw/index.html?paparan=1";
+            static final String CH = "paparan";
+
+            private DisplayManager dm;
+            private Presentation pres;
+            private DisplayManager.DisplayListener listener;
+
+            @Override public IBinder onBind(Intent i) { return null; }
+
+            @Override public void onCreate() {
+              super.onCreate();
+              startFg();
+              dm = (DisplayManager) getSystemService(Context.DISPLAY_SERVICE);
+              listener = new DisplayManager.DisplayListener() {
+                public void onDisplayAdded(int id) { showPres(); }
+                public void onDisplayRemoved(int id) { showPres(); }
+                public void onDisplayChanged(int id) { showPres(); }
+              };
+              dm.registerDisplayListener(listener, null);
+              showPres();
+            }
+
+            private void startFg() {
+              if (Build.VERSION.SDK_INT >= 26) {
+                NotificationChannel c = new NotificationChannel(CH, "Paparan Pelanggan", NotificationManager.IMPORTANCE_LOW);
+                NotificationManager nm = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
+                if (nm != null) nm.createNotificationChannel(c);
+              }
+              Notification.Builder nb = (Build.VERSION.SDK_INT >= 26)
+                ? new Notification.Builder(this, CH) : new Notification.Builder(this);
+              nb.setContentTitle("Paparan pelanggan aktif")
+                .setContentText("Skrin kedua sedang memaparkan order.")
+                .setSmallIcon(android.R.drawable.ic_menu_view);
+              startForeground(1, nb.build());
+            }
+
+            private Display pickDisplay() {
+              Display[] pr = dm.getDisplays(DisplayManager.DISPLAY_CATEGORY_PRESENTATION);
+              if (pr != null && pr.length > 0) return pr[0];
+              for (Display d : dm.getDisplays()) {
+                if (d.getDisplayId() != Display.DEFAULT_DISPLAY) return d;
+              }
+              return null;
+            }
+
+            private void showPres() {
+              Display d = pickDisplay();
+              if (d == null) return;
+              if (pres != null && pres.isShowing()
+                  && pres.getDisplay() != null
+                  && pres.getDisplay().getDisplayId() == d.getDisplayId()) return;
+              hidePres();
+              try {
+                pres = new Presentation(this, d);
+                if (Build.VERSION.SDK_INT >= 26) {
+                  pres.getWindow().setType(WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY);
+                } else {
+                  pres.getWindow().setType(WindowManager.LayoutParams.TYPE_SYSTEM_ALERT);
+                }
+                pres.getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+
+                FrameLayout fl = new FrameLayout(pres.getContext());
+                fl.setBackgroundColor(Color.parseColor("#0b3d2e"));
+                WebView wv = new WebView(pres.getContext());
+                WebSettings s = wv.getSettings();
+                s.setJavaScriptEnabled(true);
+                s.setDomStorageEnabled(true);
+                s.setUseWideViewPort(true);
+                s.setLoadWithOverviewMode(true);
+                s.setMediaPlaybackRequiresUserGesture(false);
+                if (Build.VERSION.SDK_INT >= 21) {
+                  s.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
+                }
+                wv.setKeepScreenOn(true);
+                wv.setWebViewClient(new WebViewClient());
+                fl.addView(wv, new FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+                pres.setContentView(fl);
+                pres.show();
+                wv.loadUrl(URL + "&v=" + System.currentTimeMillis());
+              } catch (Exception e) {
+                pres = null;
+              }
+            }
+
+            private void hidePres() {
+              if (pres != null) {
+                try { pres.dismiss(); } catch (Exception e) {}
+                pres = null;
+              }
+            }
+
+            @Override public int onStartCommand(Intent i, int f, int id) {
+              showPres();
+              return START_STICKY;
+            }
+
+            @Override public void onDestroy() {
+              super.onDestroy();
+              if (dm != null && listener != null) {
+                try { dm.unregisterDisplayListener(listener); } catch (Exception e) {}
+              }
+              hidePres();
+            }
+          }
+          EOF
+
+          echo "=== Generated files ==="
+          find . -type f -not -path './.git/*' | sort
+
+      - name: Build debug APK
+        run: gradle assembleDebug --no-daemon --stacktrace
+
+      - name: Rename APK
+        run: cp app/build/outputs/apk/debug/app-debug.apk KedaiPaparan.apk
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: KedaiPaparan-APK
+          path: KedaiPaparan.apk
