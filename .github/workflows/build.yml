@@ -263,7 +263,13 @@ jobs:
                   s.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
                 }
                 wv.setKeepScreenOn(true);
-                wv.setWebViewClient(new WebViewClient());
+                wv.setWebViewClient(new WebViewClient() {
+                  @Override public void onPageFinished(WebView view, String u) {
+                    view.evaluateJavascript(
+                      "(function(){try{var t=document.body?document.body.innerText:'';if(/One more step|does not review third-party|rawgit|githack does not/i.test(t)){var e=document.querySelectorAll('a,button');for(var i=0;i<e.length;i++){if(/open the page/i.test(e[i].textContent||'')){e[i].click();return;}}}}catch(x){}})();",
+                      null);
+                  }
+                });
                 fl.addView(wv, new FrameLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
                 pres.setContentView(fl);
